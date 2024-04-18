@@ -338,7 +338,7 @@ func (c *compositeClientset) waitForConn(ctx context.Context) error {
 	defer timeout.Stop()
 	var err error
 	wait.Until(func() {
-		c.log.WithField("host", c.restConfig.Host).Info("Establishing connection to apiserver")
+		c.log.WithField("host", c.restConfig.Host).Info("Establishing connection to apiserver(TEST OF IT)")
 		err = isConnReady(c)
 		if err == nil {
 			close(stop)
