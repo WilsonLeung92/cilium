@@ -9,25 +9,20 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 
-	"github.com/cilium/ebpf/rlimit"
-
-	"github.com/cilium/cilium/pkg/datapath/linux/config"
+	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/datapath/loader/metrics"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/elf"
 	"github.com/cilium/cilium/pkg/maps/callsmap"
-	"github.com/cilium/cilium/pkg/maps/policymap"
 	"github.com/cilium/cilium/pkg/option"
-	"github.com/cilium/cilium/pkg/statedb"
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
@@ -89,31 +84,27 @@ func getEpDirs(ep *testutils.TestEndpoint) *directoryInfo {
 	}
 }
 
-func testCompileAndLoad(t *testing.T, ep *testutils.TestEndpoint) {
+func testReloadDatapath(t *testing.T, ep *testutils.TestEndpoint) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 	stats := &metrics.SpanStat{}
 
 	l := newTestLoader(t)
-	err := l.compileAndLoad(ctx, ep, getEpDirs(ep), stats)
-	require.Nil(t, err)
+	_, err := l.ReloadDatapath(ctx, ep, stats)
+	require.NoError(t, err)
 }
 
-// TestCompileAndLoadDefaultEndpoint checks that the datapath can be compiled
+// TestCompileOrLoadDefaultEndpoint checks that the datapath can be compiled
 // and loaded.
-func TestCompileAndLoadDefaultEndpoint(t *testing.T) {
+func TestCompileOrLoadDefaultEndpoint(t *testing.T) {
 	ep := testutils.NewTestEndpoint()
 	initEndpoint(t, &ep)
-	testCompileAndLoad(t, &ep)
+	testReloadDatapath(t, &ep)
 }
 
-// TestCompileAndLoadHostEndpoint is the same as
+// TestCompileOrLoadHostEndpoint is the same as
 // TestCompileAndLoadDefaultEndpoint, but for the host endpoint.
-func TestCompileAndLoadHostEndpoint(t *testing.T) {
-	elfMapPrefixes = []string{
-		fmt.Sprintf("test_%s", policymap.MapName),
-		fmt.Sprintf("test_%s", callsmap.MapName),
-	}
+func TestCompileOrLoadHostEndpoint(t *testing.T) {
 
 	callsmap.HostMapName = fmt.Sprintf("test_%s", callsmap.MapName)
 	callsmap.NetdevMapName = fmt.Sprintf("test_%s", callsmap.MapName)
@@ -121,10 +112,10 @@ func TestCompileAndLoadHostEndpoint(t *testing.T) {
 	hostEp := testutils.NewTestHostEndpoint()
 	initEndpoint(t, &hostEp)
 
-	testCompileAndLoad(t, &hostEp)
+	testReloadDatapath(t, &hostEp)
 }
 
-// TestReload compiles and attaches the datapath multiple times.
+// TestReload compiles and attaches the datapath.
 func TestReload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
@@ -134,27 +125,30 @@ func TestReload(t *testing.T) {
 
 	dirInfo := getEpDirs(&ep)
 	err := compileDatapath(ctx, dirInfo, false, log)
-	require.Nil(t, err)
+	require.NoError(t, err)
+
+	l, err := netlink.LinkByName(ep.InterfaceName())
+	require.NoError(t, err)
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
-	progs := []progDefinition{
-		{progName: symbolFromEndpoint, direction: dirIngress},
-		{progName: symbolToEndpoint, direction: dirEgress},
-	}
-	opts := replaceDatapathOptions{
-		device:   ep.InterfaceName(),
-		elf:      objPath,
-		programs: progs,
-		linkDir:  testutils.TempBPFFS(t),
-	}
-	finalize, err := replaceDatapath(ctx, opts)
-	require.Nil(t, err)
-	finalize()
+	linkDir := testutils.TempBPFFS(t)
 
-	finalize, err = replaceDatapath(ctx, opts)
+	for range 2 {
+		spec, err := bpf.LoadCollectionSpec(objPath)
+		require.NoError(t, err)
 
-	require.Nil(t, err)
-	finalize()
+		coll, commit, err := loadDatapath(spec, nil, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, attachSKBProgram(l, coll.Programs[symbolFromEndpoint],
+			symbolFromEndpoint, linkDir, netlink.HANDLE_MIN_INGRESS, true))
+		require.NoError(t, attachSKBProgram(l, coll.Programs[symbolToEndpoint],
+			symbolToEndpoint, linkDir, netlink.HANDLE_MIN_EGRESS, true))
+
+		require.NoError(t, commit())
+
+		coll.Close()
+	}
 }
 
 func testCompileFailure(t *testing.T, ep *testutils.TestEndpoint) {
@@ -177,9 +171,9 @@ func testCompileFailure(t *testing.T, ep *testutils.TestEndpoint) {
 	var err error
 	stats := &metrics.SpanStat{}
 	for err == nil && time.Now().Before(timeout) {
-		err = l.compileAndLoad(ctx, ep, getEpDirs(ep), stats)
+		_, err = l.ReloadDatapath(ctx, ep, stats)
 	}
-	require.NotNil(t, err)
+	require.Error(t, err)
 }
 
 // TestCompileFailureDefaultEndpoint attempts to compile then cancels the
@@ -209,39 +203,40 @@ func TestBPFMasqAddrs(t *testing.T) {
 	})
 
 	l := newTestLoader(t)
-	nodeAddrs := l.nodeAddrs.(statedb.RWTable[tables.NodeAddress])
-	db := l.db
 
 	masq4, masq6 := l.bpfMasqAddrs("test")
 	require.Equal(t, masq4.IsValid(), false)
 	require.Equal(t, masq6.IsValid(), false)
 
-	txn := db.WriteTxn(nodeAddrs)
-	nodeAddrs.Insert(txn, tables.NodeAddress{
-		Addr:       netip.MustParseAddr("1.0.0.1"),
-		NodePort:   true,
-		Primary:    true,
-		DeviceName: "test",
-	})
-	nodeAddrs.Insert(txn, tables.NodeAddress{
-		Addr:       netip.MustParseAddr("1000::1"),
-		NodePort:   true,
-		Primary:    true,
-		DeviceName: "test",
-	})
-	nodeAddrs.Insert(txn, tables.NodeAddress{
-		Addr:       netip.MustParseAddr("2.0.0.2"),
-		NodePort:   false,
-		Primary:    true,
-		DeviceName: tables.WildcardDeviceName,
-	})
-	nodeAddrs.Insert(txn, tables.NodeAddress{
-		Addr:       netip.MustParseAddr("2000::2"),
-		NodePort:   false,
-		Primary:    true,
-		DeviceName: tables.WildcardDeviceName,
-	})
-	txn.Commit()
+	newConfig := *l.nodeConfig.Load()
+
+	newConfig.NodeAddresses = []tables.NodeAddress{
+		{
+			Addr:       netip.MustParseAddr("1.0.0.1"),
+			NodePort:   true,
+			Primary:    true,
+			DeviceName: "test",
+		},
+		{
+			Addr:       netip.MustParseAddr("1000::1"),
+			NodePort:   true,
+			Primary:    true,
+			DeviceName: "test",
+		},
+		{
+			Addr:       netip.MustParseAddr("2.0.0.2"),
+			NodePort:   false,
+			Primary:    true,
+			DeviceName: tables.WildcardDeviceName,
+		},
+		{
+			Addr:       netip.MustParseAddr("2000::2"),
+			NodePort:   false,
+			Primary:    true,
+			DeviceName: tables.WildcardDeviceName,
+		},
+	}
+	l.nodeConfig.Store(&newConfig)
 
 	masq4, masq6 = l.bpfMasqAddrs("test")
 	require.Equal(t, masq4.String(), "1.0.0.1")
@@ -284,59 +279,20 @@ func BenchmarkReplaceDatapath(b *testing.B) {
 	}
 
 	objPath := fmt.Sprintf("%s/%s", dirInfo.Output, endpointObj)
-	linkDir := testutils.TempBPFFS(b)
-	progs := []progDefinition{{progName: symbolFromEndpoint, direction: dirIngress}}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		finalize, err := replaceDatapath(ctx,
-			replaceDatapathOptions{
-				device:   ep.InterfaceName(),
-				elf:      objPath,
-				programs: progs,
-				linkDir:  linkDir,
-			},
-		)
+		spec, err := bpf.LoadCollectionSpec(objPath)
 		if err != nil {
 			b.Fatal(err)
 		}
-		finalize()
-	}
-}
 
-func TestSubstituteConfiguration(t *testing.T) {
-	testutils.PrivilegedTest(t)
-
-	ignorePrefixes := append(ignoredELFPrefixes, "test_cilium_policy")
-	for _, p := range ignoredELFPrefixes {
-		if strings.HasPrefix(p, "cilium_") {
-			testPrefix := fmt.Sprintf("test_%s", p)
-			ignorePrefixes = append(ignorePrefixes, testPrefix)
+		coll, commit, err := loadDatapath(spec, nil, nil)
+		if err != nil {
+			b.Fatal(err)
 		}
-	}
-	elf.IgnoreSymbolPrefixes(ignorePrefixes)
-
-	setupCompilationDirectories(t)
-
-	elfMapPrefixes = []string{
-		fmt.Sprintf("test_%s", policymap.MapName),
-		fmt.Sprintf("test_%s", callsmap.MapName),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), benchTimeout)
-	defer cancel()
-
-	ep := testutils.NewTestEndpoint()
-	initEndpoint(t, &ep)
-
-	option.Config.DryMode = true
-	defer func() {
-		option.Config.DryMode = false
-	}()
-
-	l := newTestLoader(t)
-	stats := &metrics.SpanStat{}
-	l.templateCache = newObjectCache(&config.HeaderfileWriter{}, nil, t.TempDir())
-	if err := l.CompileOrLoad(ctx, &ep, stats); err != nil {
-		t.Fatal(err)
+		if err := commit(); err != nil {
+			b.Fatalf("committing bpf pins: %s", err)
+		}
+		coll.Close()
 	}
 }

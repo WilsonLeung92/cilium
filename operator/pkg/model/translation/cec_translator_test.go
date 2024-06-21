@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/cilium/cilium/operator/pkg/model"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
@@ -161,6 +162,7 @@ func TestSharedIngressTranslator_getServices(t *testing.T) {
 	tests := []struct {
 		name   string
 		fields fields
+		model  *model.Model
 		want   []*ciliumv2.ServiceListener
 	}{
 		{
@@ -169,29 +171,96 @@ func TestSharedIngressTranslator_getServices(t *testing.T) {
 				name:      "cilium-ingress",
 				namespace: "kube-system",
 			},
+			model: &model.Model{
+				HTTP: []model.HTTPListener{
+					{
+						Port: 80,
+					},
+					{
+						Port: 443,
+					},
+				},
+			},
 			want: []*ciliumv2.ServiceListener{
 				{
 					Name:      "cilium-ingress",
 					Namespace: "kube-system",
+					Ports: []uint16{
+						80,
+						443,
+					},
+				},
+			},
+		},
+		{
+			name: "only http port",
+			fields: fields{
+				name:      "someotherservice",
+				namespace: "default",
+			},
+			model: &model.Model{
+				HTTP: []model.HTTPListener{
+					{
+						Port: 80,
+					},
+				},
+			},
+			want: []*ciliumv2.ServiceListener{
+				{
+					Name:      "someotherservice",
+					Namespace: "default",
+					Ports: []uint16{
+						80,
+					},
+				},
+			},
+		},
+		{
+			name: "cleartext HTTP and TLS passthrough",
+			fields: fields{
+				name:      "cilium-ingress",
+				namespace: "kube-system",
+			},
+			model: &model.Model{
+				HTTP: []model.HTTPListener{
+					{
+						Port: 80,
+					},
+				},
+				TLSPassthrough: []model.TLSPassthroughListener{
+					{
+						Port: 443,
+					},
+				},
+			},
+			want: []*ciliumv2.ServiceListener{
+				{
+					Name:      "cilium-ingress",
+					Namespace: "kube-system",
+					Ports: []uint16{
+						80,
+						443,
+					},
 				},
 			},
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			i := &cecTranslator{}
-			got := i.getServices(tt.fields.namespace, tt.fields.name)
+			got := i.getServicesWithPorts(tt.fields.namespace, tt.fields.name, tt.model)
 			require.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestSharedIngressTranslator_getHTTPRouteListenerProxy(t *testing.T) {
+func TestSharedIngressTranslator_getListenerProxy(t *testing.T) {
 	i := &cecTranslator{
 		secretsNamespace: "cilium-secrets",
 		useProxyProtocol: true,
 	}
-	res := i.getHTTPRouteListener(&model.Model{
+	res := i.getListener(&model.Model{
 		HTTP: []model.HTTPListener{
 			{
 				TLS: []model.TLSSecret{
@@ -216,12 +285,12 @@ func TestSharedIngressTranslator_getHTTPRouteListenerProxy(t *testing.T) {
 	require.Equal(t, []string{proxyProtocolType, tlsInspectorType}, listenerNames)
 }
 
-func TestSharedIngressTranslator_getHTTPRouteListener(t *testing.T) {
+func TestSharedIngressTranslator_getListener(t *testing.T) {
 	i := &cecTranslator{
 		secretsNamespace: "cilium-secrets",
 	}
 
-	res := i.getHTTPRouteListener(&model.Model{
+	res := i.getListener(&model.Model{
 		HTTP: []model.HTTPListener{
 			{
 				TLS: []model.TLSSecret{
@@ -573,6 +642,9 @@ func envoyRouteAction(namespace, backend, port string) *envoy_config_route_v3.Ro
 		Route: &envoy_config_route_v3.RouteAction{
 			ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
 				Cluster: fmt.Sprintf("%s:%s:%s", namespace, backend, port),
+			},
+			MaxStreamDuration: &envoy_config_route_v3.RouteAction_MaxStreamDuration{
+				MaxStreamDuration: &durationpb.Duration{Seconds: 0},
 			},
 		},
 	}

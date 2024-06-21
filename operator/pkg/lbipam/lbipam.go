@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/hive/cell"
+	"github.com/cilium/hive/job"
 	"github.com/sirupsen/logrus"
 	"go4.org/netipx"
 	meta "k8s.io/apimachinery/pkg/api/meta"
@@ -23,8 +25,6 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/cilium/cilium/pkg/annotation"
-	"github.com/cilium/cilium/pkg/hive/cell"
-	"github.com/cilium/cilium/pkg/hive/job"
 	"github.com/cilium/cilium/pkg/ipalloc"
 	"github.com/cilium/cilium/pkg/k8s"
 	cilium_api_v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
@@ -117,14 +117,14 @@ func (ipam *LBIPAM) restart() {
 
 	// Re-start the main goroutine
 	ipam.jobGroup.Add(
-		job.OneShot("lbipam main", func(ctx context.Context, health cell.HealthReporter) error {
+		job.OneShot("lbipam main", func(ctx context.Context, health cell.Health) error {
 			ipam.Run(ctx, health)
 			return nil
 		}),
 	)
 }
 
-func (ipam *LBIPAM) Run(ctx context.Context, health cell.HealthReporter) {
+func (ipam *LBIPAM) Run(ctx context.Context, health cell.Health) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -1292,8 +1292,7 @@ func (ipam *LBIPAM) handleNewPool(ctx context.Context, pool *cilium_api_v2alpha1
 	}
 
 	ipam.pools[pool.GetName()] = pool
-	blocks := append(pool.Spec.Cidrs, pool.Spec.Blocks...)
-	for _, ipBlock := range blocks {
+	for _, ipBlock := range pool.Spec.Blocks {
 		from, to, fromCidr, err := ipRangeFromBlock(ipBlock)
 		if err != nil {
 			return fmt.Errorf("Error parsing ip block: %w", err)
@@ -1304,10 +1303,8 @@ func (ipam *LBIPAM) handleNewPool(ctx context.Context, pool *cilium_api_v2alpha1
 			return fmt.Errorf("Error making LB Range for '%s': %w", ipBlock.Cidr, err)
 		}
 
-		// If AllowFirstLastIPs is no or unspecified, mark the first and last IP as allocated upon range creation.
-		if fromCidr && pool.Spec.AllowFirstLastIPs != cilium_api_v2alpha1.AllowFirstLastIPYes {
-			// TODO: in 1.16 switch from default no to default yes.
-			// https://github.com/cilium/cilium/issues/28591
+		// If AllowFirstLastIPs is no, mark the first and last IP as allocated upon range creation.
+		if fromCidr && pool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPNo {
 			from, to := lbRange.alloc.Range()
 
 			// If the first and last IPs are the same or adjacent, we would reserve the entire range.
@@ -1357,8 +1354,8 @@ func ipRangeFromBlock(block cilium_api_v2alpha1.CiliumLoadBalancerIPPoolIPBlock)
 func (ipam *LBIPAM) handlePoolModified(ctx context.Context, pool *cilium_api_v2alpha1.CiliumLoadBalancerIPPool) error {
 	changedAllowFirstLastIPs := false
 	if existingPool, ok := ipam.pools[pool.GetName()]; ok {
-		changedAllowFirstLastIPs = (existingPool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPYes) !=
-			(pool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPYes)
+		changedAllowFirstLastIPs = (existingPool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPNo) !=
+			(pool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPNo)
 	}
 
 	ipam.pools[pool.GetName()] = pool
@@ -1368,8 +1365,7 @@ func (ipam *LBIPAM) handlePoolModified(ctx context.Context, pool *cilium_api_v2a
 		fromCidr bool
 	}
 	var newRanges []rng
-	blocks := append(pool.Spec.Cidrs, pool.Spec.Blocks...)
-	for _, newBlock := range blocks {
+	for _, newBlock := range pool.Spec.Blocks {
 		from, to, fromCidr, err := ipRangeFromBlock(newBlock)
 		if err != nil {
 			return fmt.Errorf("Error parsing ip block: %w", err)
@@ -1400,9 +1396,7 @@ func (ipam *LBIPAM) handlePoolModified(ctx context.Context, pool *cilium_api_v2a
 		if found {
 			// If the AllowFirstLastIPs state changed
 			if fromCidr && changedAllowFirstLastIPs {
-				// TODO in 1.16 switch from default no to default yes.
-				// https://github.com/cilium/cilium/issues/28591
-				if pool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPYes {
+				if pool.Spec.AllowFirstLastIPs != cilium_api_v2alpha1.AllowFirstLastIPNo {
 					// If we are allowing first and last IPs again, free them for allocation
 					from, to := extRange.alloc.Range()
 
@@ -1454,10 +1448,8 @@ func (ipam *LBIPAM) handlePoolModified(ctx context.Context, pool *cilium_api_v2a
 			return fmt.Errorf("Error while making new LB range for range '%s - %s': %w", newRange.from, newRange.to, err)
 		}
 
-		// If AllowFirstLastIPs is no or default, mark the first and last IP as allocated upon range creation.
-		if newRange.fromCidr && pool.Spec.AllowFirstLastIPs != cilium_api_v2alpha1.AllowFirstLastIPYes {
-			// TODO: in 1.16 switch from default no to default yes.
-			// https://github.com/cilium/cilium/issues/28591
+		// If AllowFirstLastIPs is no, mark the first and last IP as allocated upon range creation.
+		if newRange.fromCidr && pool.Spec.AllowFirstLastIPs == cilium_api_v2alpha1.AllowFirstLastIPNo {
 			from, to := newLBRange.alloc.Range()
 
 			// If the first and last IPs are the same or adjacent, we would reserve the entire range.

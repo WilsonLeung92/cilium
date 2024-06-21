@@ -29,12 +29,14 @@ Label                                               Description
 ``any:!statefulset\.kubernetes\.io/pod-name``       Ignore ``statefulset.kubernetes.io/pod-name`` label
 ``any:!apps\.kubernetes\.io/pod-index``             Ignore ``apps.kubernetes.io/pod-index`` label
 ``any:!batch\.kubernetes\.io/job-completion-index`` Ignore ``batch.kubernetes.io/job-completion-index`` label
+``any:!batch\.kubernetes\.io/controller-uid``       Ignore ``batch.kubernetes.io/controller-uid`` label
 ``any:!beta\.kubernetes\.io``                       Ignore all ``beta.kubernetes.io`` labels
 ``any:!k8s\.io``                                    Ignore all ``k8s.io`` labels
 ``any:!pod-template-generation``                    Ignore all ``pod-template-generation`` labels
 ``any:!pod-template-hash``                          Ignore all ``pod-template-hash`` labels
 ``any:!controller-revision-hash``                   Ignore all ``controller-revision-hash`` labels
 ``any:!annotation.*``                               Ignore all ``annotation`` labels
+``any:!controller-uid``                             Ignore all ``controller-uid`` labels
 ``any:!etcd_node``                                  Ignore all ``etcd_node`` labels
 =================================================== =========================================================
 
@@ -97,6 +99,9 @@ setting.
 .. code-block:: shell-session
 
     kubectl delete pods -n kube-system -l k8s-app=cilium
+
+.. note:: Configuring Cilium with label patterns via ``labels`` Helm value does
+          **not** override the default set of label patterns.
 
 Existing identities will not change as a result of this new configuration. To
 apply the new label pattern setting to existing identities, restart the

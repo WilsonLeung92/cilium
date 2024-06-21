@@ -20,7 +20,7 @@ type EndpointConfigurator interface {
 }
 
 // EndpointConfiguration determines the configuration of an endpoint to be
-// created duing a CNI ADD invocation.
+// created during a CNI ADD invocation.
 type EndpointConfiguration interface {
 	// IfName specifies the container interface name to be used for this endpoint
 	IfName() string
@@ -78,6 +78,7 @@ func (c *defaultEndpointConfiguration) PrepareEndpoint(ipam *models.IPAMResponse
 		Addressing:             &models.AddressPair{},
 		K8sPodName:             string(c.CniArgs.K8S_POD_NAME),
 		K8sNamespace:           string(c.CniArgs.K8S_POD_NAMESPACE),
+		K8sUID:                 string(c.CniArgs.K8S_POD_UID),
 		ContainerInterfaceName: c.Args.IfName,
 		DatapathConfiguration:  &models.EndpointDatapathConfiguration{},
 	}

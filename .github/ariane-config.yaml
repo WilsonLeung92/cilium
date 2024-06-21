@@ -78,6 +78,15 @@ triggers:
   /ci-l4lb:
     workflows:
     - tests-l4lb.yaml
+  /fqdn-perf:
+    workflows:
+    - fqdn-perf.yaml
+  /scale-100:
+    workflows:
+    - scale-test-100-gce.yaml
+  /net-perf-gke:
+    workflows:
+    - net-perf-gke.yaml
 
 workflows:
   conformance-aks.yaml:
@@ -113,7 +122,7 @@ workflows:
   tests-datapath-verifier.yaml:
     paths-regex: (bpf|test/verifier|vendor|images)/
   tests-l4lb.yaml:
-    paths-regex: (bpf|daemon|images|pkg|test/l4lb|vendor)/
+    paths-regex: (bpf|daemon|images|pkg|test/l4lb|test/nat46x64|vendor)/
   tests-e2e-upgrade.yaml:
     paths-ignore-regex: (test|Documentation)/
   tests-ipsec-upgrade.yaml:

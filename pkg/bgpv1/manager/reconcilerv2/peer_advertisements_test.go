@@ -45,7 +45,7 @@ var (
 		},
 	}
 
-	redServicePodAdvert = v2alpha1.BGPAdvertisement{
+	redServiceLBAdvert = v2alpha1.BGPAdvertisement{
 		AdvertisementType: v2alpha1.BGPServiceAdvert,
 		Service: &v2alpha1.BGPServiceOptions{
 			Addresses: []v2alpha1.BGPServiceAddressType{
@@ -72,7 +72,7 @@ var (
 			Advertisements: []v2alpha1.BGPAdvertisement{
 				redPodCIDRAdvert,
 				redPodIPPoolAdvert,
-				redServicePodAdvert,
+				redServiceLBAdvert,
 			},
 		},
 	}
@@ -90,7 +90,7 @@ var (
 		Attributes: &v2alpha1.BGPAttributes{
 			Communities: &v2alpha1.BGPCommunities{
 				Standard: []v2alpha1.BGPStandardCommunity{
-					"65555:100",
+					"65355:100",
 				},
 			},
 		},
@@ -101,7 +101,7 @@ var (
 		Attributes: &v2alpha1.BGPAttributes{
 			Communities: &v2alpha1.BGPCommunities{
 				Standard: []v2alpha1.BGPStandardCommunity{
-					"65555:200",
+					"65355:200",
 				},
 			},
 		},
@@ -116,7 +116,7 @@ var (
 		Attributes: &v2alpha1.BGPAttributes{
 			Communities: &v2alpha1.BGPCommunities{
 				Standard: []v2alpha1.BGPStandardCommunity{
-					"65555:300",
+					"65355:300",
 				},
 			},
 		},
@@ -231,6 +231,27 @@ var (
 					},
 				},
 			},
+		},
+	}
+
+	// peer configuration
+	redPeer65001 = v2alpha1.CiliumBGPNodePeer{
+		Name:        "red-peer-65001",
+		PeerAddress: ptr.To[string]("10.10.10.1"),
+		PeerConfigRef: &v2alpha1.PeerConfigReference{
+			Group: "cilium.io",
+			Kind:  "CiliumBGPPeerConfig",
+			Name:  "peer-config-red",
+		},
+	}
+
+	bluePeer65001 = v2alpha1.CiliumBGPNodePeer{
+		Name:        "blue-peer-65001",
+		PeerAddress: ptr.To[string]("10.10.10.2"),
+		PeerConfigRef: &v2alpha1.PeerConfigReference{
+			Group: "cilium.io",
+			Kind:  "CiliumBGPPeerConfig",
+			Name:  "peer-config-blue",
 		},
 	}
 )
@@ -403,8 +424,8 @@ func Test_GetAdvertisements(t *testing.T) {
 			reqAdvertTypes: []v2alpha1.BGPAdvertisementType{v2alpha1.BGPPodCIDRAdvert, v2alpha1.BGPServiceAdvert},
 			expectedAdverts: map[string]PeerFamilyAdvertisements{
 				"red-peer-65001": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
-					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert, redServicePodAdvert},
-					{Afi: "ipv6", Safi: "unicast"}: {redPodCIDRAdvert, redServicePodAdvert},
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert, redServiceLBAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {redPodCIDRAdvert, redServiceLBAdvert},
 				},
 			},
 		},
@@ -443,8 +464,8 @@ func Test_GetAdvertisements(t *testing.T) {
 			reqAdvertTypes: []v2alpha1.BGPAdvertisementType{v2alpha1.BGPPodCIDRAdvert, v2alpha1.BGPServiceAdvert},
 			expectedAdverts: map[string]PeerFamilyAdvertisements{
 				"red-peer-65001": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
-					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert, redServicePodAdvert},
-					{Afi: "ipv6", Safi: "unicast"}: {redPodCIDRAdvert, redServicePodAdvert},
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert, redServiceLBAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {redPodCIDRAdvert, redServiceLBAdvert},
 				},
 				"blue-peer-65001": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
 					{Afi: "ipv4", Safi: "unicast"}: {bluePodCIDRAdvert, blueServicePodAdvert},
@@ -474,6 +495,104 @@ func Test_GetAdvertisements(t *testing.T) {
 			}
 
 			req.Equal(tt.expectedAdverts, advertisements)
+		})
+	}
+}
+
+// Test_PeerAdvertisementsEqual tests the equality of two PeerAdvertisements
+func Test_PeerAdvertisementsEqual(t *testing.T) {
+	tests := []struct {
+		name          string
+		peerAdvert1   PeerAdvertisements
+		peerAdvert2   PeerAdvertisements
+		expectedEqual bool
+	}{
+		{
+			name:          "Empty PeerAdvertisements",
+			peerAdvert1:   PeerAdvertisements{},
+			peerAdvert2:   PeerAdvertisements{},
+			expectedEqual: true,
+		},
+		{
+			name:          "Nil PeerAdvertisements",
+			peerAdvert1:   nil,
+			peerAdvert2:   PeerAdvertisements{},
+			expectedEqual: true,
+		},
+		{
+			name: "Empty FamilyAdvertisements in peers",
+			peerAdvert1: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{},
+			},
+			peerAdvert2: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{},
+			},
+			expectedEqual: true,
+		},
+		{
+			name: "Nil FamilyAdvertisements in peers",
+			peerAdvert1: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{},
+			},
+			peerAdvert2: PeerAdvertisements{
+				"peer-1": nil,
+			},
+			expectedEqual: true,
+		},
+		{
+			name: "Equal FamilyAdvertisements in peers",
+			peerAdvert1: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {bluePodCIDRAdvert},
+				},
+			},
+			peerAdvert2: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {bluePodCIDRAdvert},
+				},
+			},
+			expectedEqual: true,
+		},
+		{
+			name: "Unequal length in FamilyAdvertisements in peers",
+			peerAdvert1: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {bluePodCIDRAdvert},
+				},
+			},
+			peerAdvert2: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert},
+				},
+			},
+			expectedEqual: false,
+		},
+		{
+			name: "Unequal value in FamilyAdvertisements in peers",
+			peerAdvert1: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {bluePodCIDRAdvert},
+				},
+			},
+			peerAdvert2: PeerAdvertisements{
+				"peer-1": map[v2alpha1.CiliumBGPFamily][]v2alpha1.BGPAdvertisement{
+					{Afi: "ipv4", Safi: "unicast"}: {redPodCIDRAdvert},
+					{Afi: "ipv6", Safi: "unicast"}: {redPodCIDRAdvert},
+				},
+			},
+			expectedEqual: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := require.New(t)
+			equal := PeerAdvertisementsEqual(tt.peerAdvert1, tt.peerAdvert2)
+			req.Equal(tt.expectedEqual, equal)
 		})
 	}
 }

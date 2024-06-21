@@ -28,16 +28,17 @@ spec:
   {{- else }}
   type: {{ .Values.ingressController.service.type }}
   {{- end }}
-  {{- if semverCompare ">=1.24-0" .Capabilities.KubeVersion.Version -}}
   {{- if .Values.ingressController.service.loadBalancerClass }}
   loadBalancerClass: {{ .Values.ingressController.service.loadBalancerClass }}
   {{- end }}
   {{- if (not (kindIs "invalid" .Values.ingressController.service.allocateLoadBalancerNodePorts)) }}
   allocateLoadBalancerNodePorts: {{ .Values.ingressController.service.allocateLoadBalancerNodePorts }}
   {{- end }}
-  {{- end -}}
   {{- if .Values.ingressController.service.loadBalancerIP }}
   loadBalancerIP: {{ .Values.ingressController.service.loadBalancerIP }}
+  {{- end }}
+  {{- if .Values.ingressController.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.ingressController.service.externalTrafficPolicy }}
   {{- end }}
 ---
 apiVersion: v1

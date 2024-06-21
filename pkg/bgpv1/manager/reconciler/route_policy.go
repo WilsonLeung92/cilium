@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cilium/hive/cell"
 	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -19,7 +20,6 @@ import (
 	"github.com/cilium/cilium/pkg/bgpv1/manager/instance"
 	"github.com/cilium/cilium/pkg/bgpv1/manager/store"
 	"github.com/cilium/cilium/pkg/bgpv1/types"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	v2api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	v2alpha1api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/labels"
@@ -85,15 +85,16 @@ func (r *RoutePolicyReconciler) Reconcile(ctx context.Context, params ReconcileP
 	currentPolicies := r.getMetadata(params.CurrentServer)
 
 	// compile set of desired policies
+	// note: only per-neighbor export policies are supported at this time
 	desiredPolicies := make(map[string]*types.RoutePolicy)
 	for _, n := range params.DesiredConfig.Neighbors {
 		for _, routeAttrs := range n.AdvertisedPathAttributes {
-			policy, err := r.pathAttributesToPolicy(routeAttrs, n.PeerAddress, params)
+			exportPolicy, err := r.pathAttributesToPolicy(routeAttrs, n.PeerAddress, params)
 			if err != nil {
 				return fmt.Errorf("failed to convert BGP PathAttributes to a RoutePolicy: %w", err)
 			}
-			if len(policy.Statements) > 0 {
-				desiredPolicies[policy.Name] = policy
+			if len(exportPolicy.Statements) > 0 {
+				desiredPolicies[exportPolicy.Name] = exportPolicy
 			}
 		}
 	}
@@ -120,7 +121,10 @@ func (r *RoutePolicyReconciler) Reconcile(ctx context.Context, params ReconcileP
 	// add missing policies
 	for _, p := range toAdd {
 		l.Infof("Adding route policy %s to vrouter %d", p.Name, params.DesiredConfig.LocalASN)
-		err := params.CurrentServer.Server.AddRoutePolicy(ctx, types.RoutePolicyRequest{Policy: p})
+		err := params.CurrentServer.Server.AddRoutePolicy(ctx, types.RoutePolicyRequest{
+			DefaultExportAction: types.RoutePolicyActionNone, // no change to the default action
+			Policy:              p,
+		})
 		if err != nil {
 			return fmt.Errorf("failed adding route policy %v to vrouter %d: %w", p.Name, params.DesiredConfig.LocalASN, err)
 		}
@@ -136,7 +140,10 @@ func (r *RoutePolicyReconciler) Reconcile(ctx context.Context, params ReconcileP
 		if err != nil {
 			return fmt.Errorf("failed removing route policy %v from vrouter %d: %w", existing.Name, params.DesiredConfig.LocalASN, err)
 		}
-		err = params.CurrentServer.Server.AddRoutePolicy(ctx, types.RoutePolicyRequest{Policy: p})
+		err = params.CurrentServer.Server.AddRoutePolicy(ctx, types.RoutePolicyRequest{
+			DefaultExportAction: types.RoutePolicyActionNone, // no change to the default action
+			Policy:              p,
+		})
 		if err != nil {
 			return fmt.Errorf("failed adding route policy %v to vrouter %d: %w", p.Name, params.DesiredConfig.LocalASN, err)
 		}
@@ -183,6 +190,7 @@ func (r *RoutePolicyReconciler) storeMetadata(sc *instance.ServerWithConfig, met
 	sc.ReconcilerMetadata[r.Name()] = meta
 }
 
+// pathAttributesToPolicy prepares an export policy configured by CRD using the Advertised Path Attributes feature
 func (r *RoutePolicyReconciler) pathAttributesToPolicy(attrs v2alpha1api.CiliumBGPPathAttributes, neighborAddress string, params ReconcileParams) (*types.RoutePolicy, error) {
 	var v4Prefixes, v6Prefixes types.PolicyPrefixMatchList
 
@@ -232,7 +240,8 @@ func (r *RoutePolicyReconciler) pathAttributesToPolicy(attrs v2alpha1api.CiliumB
 			if attrs.Selector != nil && !labelSelector.Matches(labels.Set(pool.Labels)) {
 				continue
 			}
-			for _, cidrBlock := range pool.Spec.Cidrs {
+			prefixesSeen := sets.New[netip.Prefix]()
+			for _, cidrBlock := range pool.Spec.Blocks {
 				cidr, err := netip.ParsePrefix(string(cidrBlock.Cidr))
 				if err != nil {
 					return nil, fmt.Errorf("failed to parse IPAM pool CIDR %s: %w", cidrBlock.Cidr, err)
@@ -242,6 +251,7 @@ func (r *RoutePolicyReconciler) pathAttributesToPolicy(attrs v2alpha1api.CiliumB
 				} else {
 					v6Prefixes = append(v6Prefixes, &types.RoutePolicyPrefixMatch{CIDR: cidr, PrefixLenMin: maxPrefixLenIPv6, PrefixLenMax: maxPrefixLenIPv6})
 				}
+				prefixesSeen.Insert(cidr)
 			}
 		}
 	case v2alpha1api.PodCIDRSelectorName:

@@ -5,6 +5,7 @@ package ingress
 
 import (
 	"context"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
@@ -39,10 +40,10 @@ type ingressReconciler struct {
 	defaultSecretNamespace  string
 	defaultSecretName       string
 	enforcedHTTPS           bool
+	defaultRequestTimeout   time.Duration
 
-	hostNetworkEnabled                  bool
-	hostNetworkSharedHTTPPort           uint32
-	hostNetworkSharedTLSPassthroughPort uint32
+	hostNetworkEnabled    bool
+	hostNetworkSharedPort uint32
 
 	cecTranslator       translation.CECTranslator
 	dedicatedTranslator translation.Translator
@@ -60,9 +61,9 @@ func newIngressReconciler(
 	defaultSecretNamespace string,
 	defaultSecretName string,
 	enforcedHTTPS bool,
+	defaultRequestTimeout time.Duration,
 	hostNetworkEnabled bool,
-	hostNetworkSharedHTTPPort uint32,
-	hostNetworkSharedTLSPassthroughPort uint32,
+	hostNetworkSharedPort uint32,
 ) *ingressReconciler {
 	return &ingressReconciler{
 		logger: logger,
@@ -78,10 +79,10 @@ func newIngressReconciler(
 		defaultSecretNamespace:  defaultSecretNamespace,
 		defaultSecretName:       defaultSecretName,
 		enforcedHTTPS:           enforcedHTTPS,
+		defaultRequestTimeout:   defaultRequestTimeout,
 
-		hostNetworkEnabled:                  hostNetworkEnabled,
-		hostNetworkSharedHTTPPort:           hostNetworkSharedHTTPPort,
-		hostNetworkSharedTLSPassthroughPort: hostNetworkSharedTLSPassthroughPort,
+		hostNetworkEnabled:    hostNetworkEnabled,
+		hostNetworkSharedPort: hostNetworkSharedPort,
 	}
 }
 

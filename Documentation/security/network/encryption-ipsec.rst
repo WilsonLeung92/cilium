@@ -29,7 +29,7 @@ example below demonstrates generation of the necessary IPsec configuration
 which will be distributed as a Kubernetes secret called ``cilium-ipsec-keys``.
 A Kubernetes secret should consist of one key-value pair where the key is the
 name of the file to be mounted as a volume in cilium-agent pods, and the
-value is an IPSec configuration in the following format::
+value is an IPsec configuration in the following format::
 
     key-id encryption-algorithms PSK-in-hex-format key-size
 
@@ -97,6 +97,12 @@ Enable Encryption in Cilium
 
 At this point the Cilium managed nodes will be using IPsec for all traffic. For further
 information on Cilium's transparent encryption, see :ref:`ebpf_datapath`.
+
+Dependencies
+============
+
+When L7 proxy support is enabled (``--enable-l7-proxy=true``), IPsec requires that the
+DNS proxy operates in transparent mode (``--dnsproxy-enable-transparent-mode=true``).
 
 Encryption interface
 --------------------
@@ -197,7 +203,7 @@ Troubleshooting
 ===============
 
  * If the ``cilium`` Pods fail to start after enabling encryption, double-check if
-   the IPSec ``Secret`` and Cilium are deployed in the same namespace together.
+   the IPsec ``Secret`` and Cilium are deployed in the same namespace together.
 
  * Check for ``level=warning`` and ``level=error`` messages in the Cilium log files
 
@@ -314,10 +320,6 @@ To disable the encryption, regenerate the YAML with the option
 Limitations
 ===========
 
-    * For clusters running in native routing mode, IPsec encryption is not applied to
-      connections which are selected by an L7 Egress Network Policy or a DNS Policy.
-      For more information see `GHSA-j89h-qrvr-xc36
-      <https://github.com/cilium/cilium/security/advisories/GHSA-j89h-qrvr-xc36>`__.
     * Transparent encryption is not currently supported when chaining Cilium on
       top of other CNI plugins. For more information, see :gh-issue:`15596`.
     * :ref:`HostPolicies` are not currently supported with IPsec encryption.

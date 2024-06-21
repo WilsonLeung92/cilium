@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 
 	"github.com/go-openapi/runtime/middleware"
@@ -17,6 +18,7 @@ import (
 	. "github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/pkg/backoff"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath/linux/probes"
 	datapathOption "github.com/cilium/cilium/pkg/datapath/option"
 	datapathTables "github.com/cilium/cilium/pkg/datapath/tables"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
@@ -35,7 +37,6 @@ import (
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/promise"
-	"github.com/cilium/cilium/pkg/rand"
 	"github.com/cilium/cilium/pkg/status"
 	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/version"
@@ -52,7 +53,12 @@ const (
 	k8sMinimumEventHeartbeat = time.Minute
 )
 
-var randGen = rand.NewSafeRand(time.Now().UnixNano())
+var (
+	// randSrc is a source of pseudo-random numbers. It is seeded to the current time in
+	// nanoseconds by default but can be reseeded in tests so they are deterministic.
+	randSrc = rand.NewPCG(uint64(time.Now().UnixNano()), 0)
+	randGen = rand.New(randSrc)
+)
 
 type k8sVersion struct {
 	version          string
@@ -185,14 +191,22 @@ func (d *Daemon) getBandwidthManagerStatus() *models.BandwidthManager {
 		s.CongestionControl = models.BandwidthManagerCongestionControlBbr
 	}
 
-	s.Devices = option.Config.GetDevices()
+	devs, _ := datapathTables.SelectedDevices(d.devices, d.db.ReadTxn())
+	s.Devices = datapathTables.DeviceNames(devs)
 	return s
 }
 
-func (d *Daemon) getHostRoutingStatus() *models.HostRouting {
-	s := &models.HostRouting{Mode: models.HostRoutingModeBPF}
+func (d *Daemon) getRoutingStatus() *models.Routing {
+	s := &models.Routing{
+		IntraHostRoutingMode: models.RoutingIntraHostRoutingModeBPF,
+		InterHostRoutingMode: models.RoutingInterHostRoutingModeTunnel,
+		TunnelProtocol:       d.tunnelConfig.Protocol().String(),
+	}
 	if option.Config.EnableHostLegacyRouting {
-		s.Mode = models.HostRoutingModeLegacy
+		s.IntraHostRoutingMode = models.RoutingIntraHostRoutingModeLegacy
+	}
+	if option.Config.RoutingMode == option.RoutingModeNative {
+		s.InterHostRoutingMode = models.RoutingInterHostRoutingModeNative
 	}
 	return s
 }
@@ -202,14 +216,34 @@ func (d *Daemon) getHostFirewallStatus() *models.HostFirewall {
 	if option.Config.EnableHostFirewall {
 		mode = models.HostFirewallModeEnabled
 	}
+	devs, _ := datapathTables.SelectedDevices(d.devices, d.db.ReadTxn())
 	return &models.HostFirewall{
 		Mode:    mode,
-		Devices: option.Config.GetDevices(),
+		Devices: datapathTables.DeviceNames(devs),
 	}
 }
 
 func (d *Daemon) getClockSourceStatus() *models.ClockSource {
 	return timestamp.GetClockSourceFromOptions()
+}
+
+func (d *Daemon) getAttachModeStatus() models.AttachMode {
+	mode := models.AttachModeTc
+	if option.Config.EnableTCX && probes.HaveTCX() == nil {
+		mode = models.AttachModeTcx
+	}
+	return mode
+}
+
+func (d *Daemon) getDatapathModeStatus() models.DatapathMode {
+	mode := models.DatapathModeVeth
+	switch option.Config.DatapathMode {
+	case datapathOption.DatapathModeNetkit:
+		mode = models.DatapathModeNetkit
+	case datapathOption.DatapathModeNetkitL2:
+		mode = models.DatapathModeNetkitDashL2
+	}
+	return mode
 }
 
 func (d *Daemon) getCNIChainingStatus() *models.CNIChainingStatus {
@@ -267,6 +301,7 @@ func (d *Daemon) getKubeProxyReplacementStatus() *models.KubeProxyReplacement {
 			features.NodePort.DsrMode = models.KubeProxyReplacementFeaturesNodePortDsrModeGeneve
 		}
 		if option.Config.NodePortMode == option.NodePortModeHybrid {
+			//nolint:staticcheck
 			features.NodePort.Mode = strings.Title(option.Config.NodePortMode)
 		}
 		features.NodePort.Algorithm = models.KubeProxyReplacementFeaturesNodePortAlgorithmRandom
@@ -580,7 +615,7 @@ func (h *getNodes) Handle(d *Daemon, params GetClusterNodesParams) middleware.Re
 	if exists {
 		clientID = *params.ClientID
 	} else {
-		clientID = randGen.Int63()
+		clientID = randGen.Int64()
 		// make sure we haven't allocated an existing client ID nor the
 		// randomizer has allocated ID 0, if we have then we will return
 		// clientID 0.
@@ -719,8 +754,8 @@ func (d *Daemon) getStatus(brief bool) models.StatusResponse {
 
 func (d *Daemon) getIdentityRange() *models.IdentityRange {
 	s := &models.IdentityRange{
-		MinIdentity: int64(identity.GetMinimalAllocationIdentity()),
-		MaxIdentity: int64(identity.GetMaximumAllocationIdentity()),
+		MinIdentity: int64(identity.GetMinimalAllocationIdentity(d.clusterInfo.ID)),
+		MaxIdentity: int64(identity.GetMaximumAllocationIdentity(d.clusterInfo.ID)),
 	}
 
 	return s
@@ -1063,6 +1098,25 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 				}
 			},
 		},
+		{
+			Name: "cni-config",
+			Probe: func(ctx context.Context) (interface{}, error) {
+				if d.cniConfigManager == nil {
+					return nil, nil
+				}
+				return d.cniConfigManager.Status(), nil
+			},
+			OnStatusUpdate: func(status status.Status) {
+				d.statusCollectMutex.Lock()
+				defer d.statusCollectMutex.Unlock()
+
+				if status.Err == nil {
+					if s, ok := status.Data.(*models.Status); ok {
+						d.statusResponse.CniFile = s
+					}
+				}
+			},
+		},
 	}
 
 	d.statusResponse.Masquerading = d.getMasqueradingStatus()
@@ -1070,12 +1124,14 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 	d.statusResponse.IPV4BigTCP = d.getIPV4BigTCPStatus()
 	d.statusResponse.BandwidthManager = d.getBandwidthManagerStatus()
 	d.statusResponse.HostFirewall = d.getHostFirewallStatus()
-	d.statusResponse.HostRouting = d.getHostRoutingStatus()
+	d.statusResponse.Routing = d.getRoutingStatus()
 	d.statusResponse.ClockSource = d.getClockSourceStatus()
 	d.statusResponse.BpfMaps = d.getBPFMapStatus()
 	d.statusResponse.CniChaining = d.getCNIChainingStatus()
 	d.statusResponse.IdentityRange = d.getIdentityRange()
 	d.statusResponse.Srv6 = d.getSRv6Status()
+	d.statusResponse.AttachMode = d.getAttachModeStatus()
+	d.statusResponse.DatapathMode = d.getDatapathModeStatus()
 
 	d.statusCollector = status.NewCollector(probes, status.Config{StackdumpPath: "/run/cilium/state/agent.stack.gz"})
 
@@ -1093,5 +1149,7 @@ func (d *Daemon) startStatusCollector(cleaner *daemonCleanup) {
 			}).Error("KVStore state not OK")
 
 		}
+
+		d.statusCollector.Close()
 	})
 }

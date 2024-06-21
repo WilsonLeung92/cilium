@@ -308,10 +308,79 @@ Annotations:
 
 * Cilium Envoy DaemonSet is now enabled by default, and existing in-container installs
   will be changed to DaemonSet mode unless specifically opted out of. This can be done by
-  disabling it manually by setting ``envoy.enabled=false`` accordingly.
+  disabling it manually by setting ``envoy.enabled=false`` accordingly. This change adds
+  one additional Pod per Node, therefore Nodes at maximum Pod capacity will face an
+  eviction of a single non-system critical Pod after upgrading.
+* For Linux kernels of version 6.6 or newer, Cilium by default switches to tcx BPF links for
+  attaching its tc BPF programs in the core datapath for better resiliency and performance.
+  If your current setup has third-party old-style tc BPF users, then this option should be
+  disabled via Helm through ``bpf.enableTCX=false`` in order to continue in old-style tc BPF
+  attachment mode as before.
 * The ``cilium-dbg status --verbose`` command health data may now show health reported on a non-leaf
   component under a leaf named ``reporter``. Health data tree branches will now also be sorted by
   the fully qualified health status identifier.
+* L7 network policy with terminatingTLS will not load the key ``ca.crt`` even if it is present in the
+  secret. This prevents Envoy from incorrectly requiring client certificates from pods when using TLS
+  termination. To retain old behaviour for bug compatibility, please set ``--use-full-tls-context=true``.
+* The built-in WireGuard userspace-mode fallback (Helm ``wireguard.userspaceFallback``) has been
+  deprecated and will be removed in a future version of Cilium. Users of WireGuard transparent
+  encryption are required to use a Linux kernel with WireGuard support going forward.
+* Local Redirect Policy, when enabled with socket-based load-balancing, redirects traffic
+  from policy-selected node-local backends destined to the policy's frontend, back to the
+  node-local backends. To override this behavior, which is enabled by default, create
+  local redirect policies with the ``skipRedirectFromBackend`` flag set to ``false``.
+* Detection and reconfiguration on changes to native network devices and their addresses is now
+  the default. Cilium will now load the native device BPF program onto devices that appear after
+  Cilium has started. NodePort services are now available on addresses assigned after Cilium has
+  started. The set of addresses to use for NodePort can be configured with the Helm option
+  ``nodePort.addresses``.
+  The related Helm option ``enableRuntimeDeviceDetection`` has been deprecated and will be
+  removed in future release. The devices and the addresses Cilium considers the node's addresses
+  can be inspected with the ``cilium-dbg statedb devices`` and ``cilium-dbg statedb node-addresses``
+  commands.
+* Service connections that use ``Direct-Server-Return`` and were established prior to Cilium v1.13.3
+  will be disrupted, and need to be re-established.
+* Cilium Operator now uses dynamic rate limiting based on cluster size for the CiliumEndpointSlice
+  controller. The ``ces-rate-limits`` flag or the Helm value ``ciliumEndpointSlice.rateLimits`` can
+  be used to supply a custom configuration. The following list of flags for static and dynamic rate
+  limits have been deprecated and their usage will be ignored:
+  ``ces-write-qps-limit``, ``ces-write-qps-burst``, ``ces-enable-dynamic-rate-limit``,
+  ``ces-dynamic-rate-limit-nodes``, ``ces-dynamic-rate-limit-qps-limit``,
+  ``ces-dynamic-rate-limit-qps-burst``
+* Metrics ``policy_regeneration_total`` and
+  ``policy_regeneration_time_stats_seconds`` have been deprecated in favor of
+  ``endpoint_regenerations_total`` and
+  ``endpoint_regeneration_time_stats_seconds``, respectively.
+* The Cilium cluster name is now validated to consist of at most 32 lower case
+  alphanumeric characters and '-', start and end with an alphanumeric character.
+  Validation can be currently bypassed configuring ``upgradeCompatibility`` to
+  v1.15 or earlier, but will be strictly enforced starting from Cilium v1.17.
+* Certain invalid CiliumNetworkPolicies that have always been ignored will now be rejected by the apiserver.
+  Specifically, policies with multiple L7 protocols on the same port, over 40 port rules, or over
+  40 ICMP rules will now have server-side validation.
+* Cilium could previously be run in a configuration where the Etcd instances
+  that distribute Cilium state between nodes would be managed in pod network by
+  Cilium itself. This support was complicated and error prone, so the support
+  is now deprecated. The following guide provides alternatives for running
+  Cilium with Etcd: :ref:`k8s_install_etcd`.
+* Cilium now respects the port specified as part of the etcd configuration, rather
+  than defaulting it to that of the service when the address matches a Kubernetes
+  service DNS name. Additionally, Kubernetes service DNS name to ClusterIP
+  translation is now automatically enabled for etcd (if necessary); the
+  ``etcd.operator`` ``kvstore-opt`` option is now a no-op and has been removed.
+* KVStoreMesh is now enabled by default in Clustermesh.
+  If you want to disable KVStoreMesh, set Helm value ``clustermesh.apiserver.kvstoremesh.enabled=false``
+  explicitly during the upgrade.
+* Gateway API GRPCRoute which is moved from ``v1alpha2`` to ``v1``. Please install new GRPCRoute CRD and migrate
+  your resources from ``v1alpha2`` to ``v1`` version.
+* The default value of of ``CiliumLoadBalancerIPPool.spec.allowFirstLastIPs`` has been changed to ``yes``.
+  This means that unless explicitly configured otherwise, the first and last IP addresses of the IP pool
+  are available for allocation. If you rely on the previous behavior, you should explicitly set
+  ``allowFirstLastIPs: no`` in your IP pool configuration before the upgrade.
+* The ``CiliumLoadBalancerIPPool.spec.cidrs`` field has been deprecated in v1.15 favor of 
+  ``CiliumLoadBalancerIPPool.spec.blocks``. As of v1.15 both fields have the same behavior. The
+  ``cidrs`` field will be removed in v1.16. Please update your IP pool configurations to use
+  ``blocks`` instead of ``cidrs`` before upgrading.
 
 Removed Options
 ~~~~~~~~~~~~~~~
@@ -324,6 +393,13 @@ Removed Options
   now always happens asynchronously, therefore making this timeout obsolete.
 * The deprecated flag ``enable-remote-node-identity`` has been removed.
   More information can be found in the following Helm upgrade notes.
+* The deprecated flag ``install-egress-gateway-routes`` has been removed.
+
+Deprecated Options
+~~~~~~~~~~~~~~~~~~
+
+* The ``clustermesh-ip-identities-sync-timeout`` flag has been deprecated in
+  favor of ``clustermesh-sync-timeout``, and will be removed in Cilium 1.17.
 
 Helm Options
 ~~~~~~~~~~~~
@@ -340,6 +416,18 @@ Helm Options
 * The deprecated Helm option ``remoteNodeIdentity`` has been removed. This should have no impact on users who used the previous default
   value of ``true``: Remote nodes will now always use ``remote-node`` identity. If you have network policies based on
   ``enable-remote-node-identity=false`` make sure to update them.
+* The clustermesh-apiserver ``podSecurityContext`` and ``securityContext`` settings now
+  default to drop all capabilities and run as non-root user.
+* Deprecated Helm option ``containerRuntime.integration`` is removed. If you are using crio, please check :ref:`crio-instructions`.
+* Helm option ``enableRuntimeDeviceDetection`` is now deprecated and is a no-op.
+* The IP addresses on which to expose NodePort services can now be configured with ``nodePort.addresses``. Prior to this, Cilium only
+  exposed NodePort services on the first (preferably private) IPv4 and IPv6 address of each device.
+* Helm option ``enableCiliumEndpointSlice`` has been deprecated and will be removed in a future release.
+  The option has been replaced by ``ciliumEndpointSlice.enabled``.
+* The Helm option for deploying a managed etcd instance via ``etcd.managed``
+  and other related Helm configurations have been removed.
+* The Clustermesh option ``clustermesh.apiserver.kvstoremesh.enabled`` is now set to ``true`` by default.
+  To disable KVStoreMesh, set ``clustermesh.apiserver.kvstoremesh.enabled=false`` explicitly during the upgrade.
 
 Added Metrics
 ~~~~~~~~~~~~~

@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/cilium/cilium/pkg/datapath/linux/config"
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
@@ -20,14 +19,14 @@ func TestWrap(t *testing.T) {
 	)
 
 	realEP := testutils.NewTestEndpoint()
-	template := wrap(&realEP, nil)
-	cfg := &config.HeaderfileWriter{}
+	template := wrap(&realEP)
+	cfg := configWriterForTest(t)
 
 	// Write the configuration that should be the same, and verify it is.
-	err := cfg.WriteTemplateConfig(&realEPBuffer, &realEP)
-	require.Nil(t, err)
-	err = cfg.WriteTemplateConfig(&templateBuffer, template)
-	require.Nil(t, err)
+	err := cfg.WriteTemplateConfig(&realEPBuffer, &localNodeConfig, &realEP)
+	require.NoError(t, err)
+	err = cfg.WriteTemplateConfig(&templateBuffer, &localNodeConfig, template)
+	require.NoError(t, err)
 	require.Equal(t, realEPBuffer.String(), templateBuffer.String())
 
 	// Write with the static data, and verify that the buffers differ.
@@ -36,10 +35,10 @@ func TestWrap(t *testing.T) {
 	// define every bit of static data differently in the templates.
 	realEPBuffer.Reset()
 	templateBuffer.Reset()
-	err = cfg.WriteEndpointConfig(&realEPBuffer, &realEP)
-	require.Nil(t, err)
-	err = cfg.WriteEndpointConfig(&templateBuffer, template)
-	require.Nil(t, err)
+	err = cfg.WriteEndpointConfig(&realEPBuffer, &localNodeConfig, &realEP)
+	require.NoError(t, err)
+	err = cfg.WriteEndpointConfig(&templateBuffer, &localNodeConfig, template)
+	require.NoError(t, err)
 
 	require.NotEqual(t, realEPBuffer.String(), templateBuffer.String())
 }
